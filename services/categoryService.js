@@ -16,7 +16,6 @@ exports.ensureDefaultCategories = async () => {
         $setOnInsert: {
           name: item.name,
           slug: item.slug,
-          icon: item.icon,
           description: item.description,
           sortOrder: item.sortOrder,
           isActive: true,
@@ -35,15 +34,17 @@ exports.getCategories = async ({ includeInactive = false } = {}) => {
 };
 
 exports.createCategory = async (payload) => {
+  const { icon, ...rest } = payload;
   const slug = payload.slug ? slugify(payload.slug) : slugify(payload.name);
   return Category.create({
-    ...payload,
+    ...rest,
     slug,
   });
 };
 
 exports.updateCategory = async (id, payload) => {
-  const updates = { ...payload };
+  const { icon, ...rest } = payload;
+  const updates = { ...rest };
   if (updates.slug) {
     updates.slug = slugify(updates.slug);
   }

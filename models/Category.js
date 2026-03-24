@@ -15,11 +15,6 @@ const categorySchema = new mongoose.Schema(
       lowercase: true,
       unique: true,
     },
-    icon: {
-      type: String,
-      trim: true,
-      default: "Shield",
-    },
     description: {
       type: String,
       trim: true,

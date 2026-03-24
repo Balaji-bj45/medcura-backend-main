@@ -5,12 +5,19 @@ const {
 } = require("../validations/categoryValidation");
 const { successResponse } = require("../utils/apiResponse");
 
+const serializeCategory = (category) => {
+  const plain = typeof category?.toObject === "function" ? category.toObject() : category;
+  if (!plain) return plain;
+  const { icon, ...rest } = plain;
+  return rest;
+};
+
 exports.getAll = async (req, res, next) => {
   try {
     const includeInactive =
       req.user?.role === "admin" && req.query.includeInactive === "true";
     const categories = await categoryService.getCategories({ includeInactive });
-    return successResponse(res, 200, categories, "Categories fetched");
+    return successResponse(res, 200, categories.map(serializeCategory), "Categories fetched");
   } catch (err) {
     return next(err);
   }
@@ -24,7 +31,7 @@ exports.create = async (req, res, next) => {
     }
 
     const category = await categoryService.createCategory(req.body);
-    return successResponse(res, 201, category, "Category created");
+    return successResponse(res, 201, serializeCategory(category), "Category created");
   } catch (err) {
     return next(err);
   }
@@ -42,7 +49,7 @@ exports.update = async (req, res, next) => {
       throw { statusCode: 404, message: "Category not found" };
     }
 
-    return successResponse(res, 200, category, "Category updated");
+    return successResponse(res, 200, serializeCategory(category), "Category updated");
   } catch (err) {
     return next(err);
   }
@@ -55,7 +62,7 @@ exports.remove = async (req, res, next) => {
       throw { statusCode: 404, message: "Category not found" };
     }
 
-    return successResponse(res, 200, category, "Category deactivated");
+    return successResponse(res, 200, serializeCategory(category), "Category deactivated");
   } catch (err) {
     return next(err);
   }
