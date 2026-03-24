@@ -9,6 +9,7 @@ const getArgValue = (flag) => {
     return null;
   }
   return process.argv[index + 1];
+  
 };
 
 const run = async () => {
