@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const addressSchema = new mongoose.Schema(
   {
@@ -77,9 +78,24 @@ const customerSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    password: {
+      type: String,
+      minlength: 8,
+    },
     isVerified: {
       type: Boolean,
       default: false,
+    },
+    passwordChangedAt: {
+      type: Date,
+    },
+    resetPasswordTokenHash: {
+      type: String,
+      default: null,
+    },
+    resetPasswordExpiresAt: {
+      type: Date,
+      default: null,
     },
     lastLoginAt: {
       type: Date,
@@ -99,5 +115,12 @@ const customerSchema = new mongoose.Schema(
 );
 
 customerSchema.index({ email: 1 }, { unique: true });
+customerSchema.methods.comparePassword = function comparePassword(candidatePassword) {
+  if (!this.password) {
+    return false;
+  }
+
+  return bcrypt.compare(candidatePassword, this.password);
+};
 
 module.exports = mongoose.model("Customer", customerSchema);

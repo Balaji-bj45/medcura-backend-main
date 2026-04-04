@@ -1,6 +1,8 @@
 const Customer = require("../models/Customer");
 const Otp = require("../models/Otp");
+const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const https = require("https");
 const transporter = require("../config/mailer");
 const jwt = require("jsonwebtoken");
 const Order = require("../models/Order");
@@ -10,10 +12,22 @@ const OTP_RESEND_COOLDOWN_SECONDS = Number(
   process.env.CUSTOMER_OTP_RESEND_COOLDOWN_SECONDS || 45
 );
 const OTP_MAX_ATTEMPTS = Number(process.env.CUSTOMER_OTP_MAX_ATTEMPTS || 5);
+const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
+const CUSTOMER_RESET_TOKEN_TTL_MINUTES = Number(
+  process.env.CUSTOMER_RESET_TOKEN_TTL_MINUTES ||
+    process.env.AUTH_RESET_TOKEN_TTL_MINUTES ||
+    15
+);
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
 const getOtpTtlMs = () => OTP_TTL_MINUTES * 60 * 1000;
 const getResendCooldownMs = () => OTP_RESEND_COOLDOWN_SECONDS * 1000;
+const getCustomerResetTokenTtlMs = () => CUSTOMER_RESET_TOKEN_TTL_MINUTES * 60 * 1000;
+const getAllowedGoogleClientIds = () =>
+  (process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 
 const sanitizeCustomer = (customer) => ({
   id: customer._id,
@@ -28,6 +42,122 @@ const hashOtp = (otpCode) =>
   crypto.createHash("sha256").update(otpCode).digest("hex");
 
 const generateOtp = () => crypto.randomInt(100000, 1000000).toString();
+const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
+const signCustomerToken = (customerId) =>
+  jwt.sign({ id: customerId, role: "customer" }, process.env.CUSTOMER_JWT_SECRET, {
+    expiresIn: "7d",
+  });
+const buildCustomerResetUrl = (token) => {
+  const base =
+    process.env.CUSTOMER_RESET_URL || "http://localhost:5173/reset-password";
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}token=${encodeURIComponent(token)}`;
+};
+
+const fetchGoogleTokenInfo = (credential) =>
+  new Promise((resolve, reject) => {
+    const requestUrl = new URL(GOOGLE_TOKENINFO_URL);
+    requestUrl.searchParams.set("id_token", credential);
+
+    const request = https.get(requestUrl, (response) => {
+      let body = "";
+
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+
+      response.on("end", () => {
+        let parsedBody = {};
+
+        try {
+          parsedBody = body ? JSON.parse(body) : {};
+        } catch (parseError) {
+          reject({
+            statusCode: 502,
+            message: "Received an invalid response from Google sign-in verification.",
+          });
+          return;
+        }
+
+        if ((response.statusCode || 500) >= 400) {
+          reject({
+            statusCode: 401,
+            message:
+              parsedBody.error_description ||
+              parsedBody.error ||
+              "Google sign-in could not be verified.",
+          });
+          return;
+        }
+
+        resolve(parsedBody);
+      });
+    });
+
+    request.on("error", (error) => {
+      reject({
+        statusCode: 502,
+        message:
+          error.message === "Google verification request timed out."
+            ? error.message
+            : "Unable to reach Google to verify sign-in.",
+      });
+    });
+
+    request.setTimeout(8000, () => {
+      request.destroy(new Error("Google verification request timed out."));
+    });
+  });
+
+const verifyGoogleCredential = async (credential) => {
+  const allowedClientIds = getAllowedGoogleClientIds();
+
+  if (allowedClientIds.length === 0) {
+    throw {
+      statusCode: 500,
+      message: "Google sign-in is not configured on the server.",
+    };
+  }
+
+  const payload = await fetchGoogleTokenInfo(credential);
+  const googleAudience = payload.aud?.trim();
+  const issuer = payload.iss?.trim();
+
+  if (!googleAudience || !allowedClientIds.includes(googleAudience)) {
+    throw {
+      statusCode: 401,
+      message: "This Google sign-in request is not meant for this app.",
+    };
+  }
+
+  if (
+    issuer &&
+    issuer !== "accounts.google.com" &&
+    issuer !== "https://accounts.google.com"
+  ) {
+    throw {
+      statusCode: 401,
+      message: "Google sign-in issuer could not be verified.",
+    };
+  }
+
+  if (!(payload.email_verified === true || payload.email_verified === "true")) {
+    throw {
+      statusCode: 401,
+      message: "Please use a Google account with a verified email address.",
+    };
+  }
+
+  if (!payload.email) {
+    throw {
+      statusCode: 400,
+      message: "Google sign-in did not return an email address.",
+    };
+  }
+
+  return payload;
+};
 
 const buildOtpMailHtml = ({ otp, purpose }) => {
   const action = purpose === "signup" ? "complete your MedCura sign up" : "log in to MedCura";
@@ -48,6 +178,28 @@ const buildOtpMailHtml = ({ otp, purpose }) => {
     </div>
   `;
 };
+
+const buildCustomerResetMailHtml = ({ resetUrl }) => `
+  <div style="font-family:Arial,sans-serif;background:#f8fdff;padding:20px">
+    <div style="max-width:540px;margin:0 auto;background:#ffffff;border-radius:14px;border:1px solid #d9edf3;padding:24px">
+      <h2 style="margin:0;color:#0e336b">MedCura Password Reset</h2>
+      <p style="margin-top:12px;color:#35526f;line-height:1.5">
+        Click the button below to reset your MedCura customer password.
+      </p>
+      <p style="margin:24px 0">
+        <a
+          href="${resetUrl}"
+          style="display:inline-block;border-radius:999px;background:#0e336b;color:#ffffff;padding:12px 22px;text-decoration:none;font-weight:700"
+        >
+          Reset Password
+        </a>
+      </p>
+      <p style="margin:0;color:#5d758a;line-height:1.5">
+        This link expires in ${CUSTOMER_RESET_TOKEN_TTL_MINUTES} minutes.
+      </p>
+    </div>
+  </div>
+`;
 
 exports.sendOtp = async ({ email, fullName, purpose = "login" }) => {
   const normalizedEmail = normalizeEmail(email);
@@ -188,13 +340,151 @@ exports.verifyOtp = async ({ email, otpInput, fullName, purpose = "login" }) => 
 
   await Otp.deleteOne({ _id: otpRecord._id });
 
-  const token = jwt.sign(
-    { id: customer._id, role: "customer" },
-    process.env.CUSTOMER_JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+  const token = signCustomerToken(customer._id);
 
   return { token, customer: sanitizeCustomer(customer), isNewUser };
+};
+
+exports.authenticateWithGoogle = async ({ credential }) => {
+  const googleProfile = await verifyGoogleCredential(credential);
+  const normalizedEmail = normalizeEmail(googleProfile.email);
+  const now = new Date();
+  let customer = await Customer.findOne({ email: normalizedEmail });
+  let isNewUser = false;
+
+  if (!customer) {
+    customer = await Customer.create({
+      fullName:
+        googleProfile.name?.trim() || normalizedEmail.split("@")[0] || "Customer",
+      email: normalizedEmail,
+      isVerified: true,
+      lastLoginAt: now,
+    });
+    isNewUser = true;
+  } else {
+    customer.isVerified = true;
+    customer.lastLoginAt = now;
+
+    if (!customer.fullName) {
+      customer.fullName =
+        googleProfile.name?.trim() || normalizedEmail.split("@")[0] || "Customer";
+    }
+
+    await customer.save();
+  }
+
+  const token = signCustomerToken(customer._id);
+
+  return {
+    token,
+    customer: sanitizeCustomer(customer),
+    isNewUser,
+  };
+};
+
+exports.registerWithPassword = async ({ fullName, email, password }) => {
+  const normalizedEmail = normalizeEmail(email);
+  const existingCustomer = await Customer.findOne({ email: normalizedEmail });
+
+  if (existingCustomer) {
+    throw {
+      statusCode: 409,
+      message: "An account with this email already exists. Please sign in instead.",
+    };
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 12);
+  const now = new Date();
+  const customer = await Customer.create({
+    fullName: fullName.trim(),
+    email: normalizedEmail,
+    password: hashedPassword,
+    isVerified: true,
+    lastLoginAt: now,
+    passwordChangedAt: now,
+  });
+
+  return {
+    token: signCustomerToken(customer._id),
+    customer: sanitizeCustomer(customer),
+    isNewUser: true,
+  };
+};
+
+exports.loginWithPassword = async ({ email, password }) => {
+  const normalizedEmail = normalizeEmail(email);
+  const customer = await Customer.findOne({ email: normalizedEmail });
+
+  if (!customer) {
+    throw { statusCode: 401, message: "Invalid email or password." };
+  }
+
+  if (!customer.password) {
+    throw {
+      statusCode: 401,
+      message: "This account does not have a password yet. Use Google or Forgot Password.",
+    };
+  }
+
+  const isMatch = await customer.comparePassword(password);
+
+  if (!isMatch) {
+    throw { statusCode: 401, message: "Invalid email or password." };
+  }
+
+  customer.lastLoginAt = new Date();
+  customer.isVerified = true;
+  await customer.save();
+
+  return {
+    token: signCustomerToken(customer._id),
+    customer: sanitizeCustomer(customer),
+    isNewUser: false,
+  };
+};
+
+exports.forgotPassword = async (email) => {
+  const normalizedEmail = normalizeEmail(email);
+  const customer = await Customer.findOne({ email: normalizedEmail });
+
+  if (!customer) {
+    return;
+  }
+
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashToken(rawToken);
+  const resetUrl = buildCustomerResetUrl(rawToken);
+
+  customer.resetPasswordTokenHash = tokenHash;
+  customer.resetPasswordExpiresAt = new Date(Date.now() + getCustomerResetTokenTtlMs());
+  await customer.save();
+
+  await transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: customer.email,
+    subject: "MedCura Customer Password Reset",
+    text: `Use this link to reset your customer password: ${resetUrl}\nThis link expires in ${CUSTOMER_RESET_TOKEN_TTL_MINUTES} minutes.`,
+    html: buildCustomerResetMailHtml({ resetUrl }),
+  });
+};
+
+exports.resetPassword = async (token, newPassword) => {
+  const tokenHash = hashToken(token);
+  const customer = await Customer.findOne({
+    resetPasswordTokenHash: tokenHash,
+    resetPasswordExpiresAt: { $gt: new Date() },
+  });
+
+  if (!customer) {
+    throw { statusCode: 400, message: "Invalid or expired reset token." };
+  }
+
+  customer.password = await bcrypt.hash(newPassword, 12);
+  customer.passwordChangedAt = new Date();
+  customer.isVerified = true;
+  customer.resetPasswordTokenHash = null;
+  customer.resetPasswordExpiresAt = null;
+  await customer.save();
 };
 
 exports.getMyProfile = async (customerId) => {

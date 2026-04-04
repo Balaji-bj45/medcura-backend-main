@@ -34,6 +34,30 @@ exports.verifyOtpSchema = Joi.object({
   fullName: Joi.string().trim().min(2).max(80).optional().allow(""),
 });
 
+exports.googleAuthSchema = Joi.object({
+  credential: Joi.string().trim().required(),
+});
+
+exports.customerRegisterSchema = Joi.object({
+  fullName: Joi.string().trim().min(2).max(80).required(),
+  email: Joi.string().trim().email().required(),
+  password: Joi.string().min(8).required(),
+});
+
+exports.customerLoginSchema = Joi.object({
+  email: Joi.string().trim().email().required(),
+  password: Joi.string().min(8).required(),
+});
+
+exports.customerForgotPasswordSchema = Joi.object({
+  email: Joi.string().trim().email().required(),
+});
+
+exports.customerResetPasswordSchema = Joi.object({
+  token: Joi.string().trim().min(20).required(),
+  password: Joi.string().min(8).required(),
+});
+
 exports.updateProfileSchema = Joi.object({
   fullName: Joi.string().trim().min(2).max(80).required(),
 });
