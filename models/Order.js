@@ -69,5 +69,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ customer: 1, createdAt: -1 });
+orderSchema.index({ razorpayOrderId: 1 }, { unique: true });
+orderSchema.index({ razorpayPaymentId: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model("Order", orderSchema);

@@ -3,7 +3,6 @@ const crypto = require("crypto");
 const orderService = require("../services/orderService");
 const { checkoutSchema } = require("../validations/orderValidation");
 const { successResponse } = require("../utils/apiResponse");
-const Cart = require("../models/Cart");
 const Order = require("../models/Order");
 
 exports.createRazorpayOrder = async (req, res, next) => {
@@ -58,6 +57,17 @@ exports.verifyPayment = async (req, res, next) => {
       address,
     } = req.body;
 
+    const existingOrder = await Order.findOne({
+      $or: [
+        { razorpayPaymentId: razorpay_payment_id },
+        { razorpayOrderId: razorpay_order_id, customer: customerId },
+      ],
+    });
+
+    if (existingOrder?.razorpayPaymentId === razorpay_payment_id) {
+      return successResponse(res, 200, existingOrder, "Payment already verified");
+    }
+
     const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expectedSignature = crypto
@@ -84,8 +94,6 @@ exports.verifyPayment = async (req, res, next) => {
       tax,
       paymentMethod: req.body.paymentMethod || "Razorpay",
     });
-
-    await Cart.deleteOne({ customer: customerId });
 
     return successResponse(res, 200, order, "Payment verified & order placed");
   } catch (err) {

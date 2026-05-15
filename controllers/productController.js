@@ -135,6 +135,17 @@ const mapUploadedMedia = (req, fallbackImages = [], fallbackVideo = null) => {
   return { images, video };
 };
 
+const normalizeProductCollection = (payload) => {
+  if (Array.isArray(payload)) {
+    return payload.map(normalizeProductMedia);
+  }
+
+  return {
+    ...payload,
+    items: Array.isArray(payload?.items) ? payload.items.map(normalizeProductMedia) : [],
+  };
+};
+
 exports.create = async (req, res, next) => {
   try {
     const { images, video } = mapUploadedMedia(req, [], null);
@@ -188,6 +199,8 @@ exports.getAll = async (req, res, next) => {
       maxPrice,
       sort,
       limit,
+      page,
+      pageSize,
     } = req.query;
     const isAdminRequest = req.user?.role === "admin";
     const forceIncludeInactive = req.forceIncludeInactive === true;
@@ -203,9 +216,11 @@ exports.getAll = async (req, res, next) => {
       maxPrice: maxPrice !== undefined ? parseNumber(maxPrice) : undefined,
       sort,
       limit: limit !== undefined ? parseInt(limit, 10) : undefined,
+      page: page !== undefined ? parseInt(page, 10) : undefined,
+      pageSize: pageSize !== undefined ? parseInt(pageSize, 10) : undefined,
     });
 
-    return successResponse(res, 200, products.map(normalizeProductMedia), "Products fetched");
+    return successResponse(res, 200, normalizeProductCollection(products), "Products fetched");
   } catch (err) {
     next(err);
   }

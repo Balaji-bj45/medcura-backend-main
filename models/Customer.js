@@ -113,8 +113,6 @@ const customerSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
-customerSchema.index({ email: 1 }, { unique: true });
 customerSchema.methods.comparePassword = function comparePassword(candidatePassword) {
   if (!this.password) {
     return false;

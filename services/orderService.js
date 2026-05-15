@@ -2,6 +2,7 @@ const Cart = require("../models/Cart");
 const Product = require("../models/Product");
 const Order = require("../models/Order");
 const Customer = require("../models/Customer");
+const mongoose = require("mongoose");
 
 const getUnitPrice = (product) => {
   if (typeof product.discountPrice === "number" && product.discountPrice > 0) {
@@ -66,6 +67,88 @@ exports.calculateCartTotal = async (customerId) => {
   return { subtotal, deliveryCharge, tax, total, items };
 };
 
+const isDuplicateKeyError = (error) => error?.code === 11000;
+
+const usesUnsupportedTransactions = (error) =>
+  typeof error?.message === "string" &&
+  (error.message.includes("Transaction numbers are only allowed") ||
+    error.message.includes("replica set member") ||
+    error.message.includes("mongos"));
+
+const findExistingOrder = async ({
+  razorpayOrderId,
+  razorpayPaymentId,
+  customer,
+  session,
+}) => {
+  const orConditions = [];
+
+  if (razorpayPaymentId) {
+    orConditions.push({ razorpayPaymentId });
+  }
+
+  if (razorpayOrderId) {
+    orConditions.push({ razorpayOrderId, customer });
+  }
+
+  if (orConditions.length === 0) return null;
+
+  return Order.findOne({ $or: orConditions }).session(session || null);
+};
+
+const reserveInventory = async (items, session) => {
+  const reservedItems = [];
+
+  for (const item of items) {
+    const updateResult = await Product.updateOne(
+      {
+        _id: item.product,
+        isActive: true,
+        stock: { $gte: item.quantity },
+      },
+      { $inc: { stock: -item.quantity } },
+      session ? { session } : undefined
+    );
+
+    if (!updateResult.modifiedCount) {
+      throw {
+        statusCode: 409,
+        message: `Insufficient stock for ${item.name}`,
+      };
+    }
+
+    reservedItems.push(item);
+  }
+
+  return reservedItems;
+};
+
+const restoreInventory = async (items, session) => {
+  await Promise.all(
+    items.map((item) =>
+      Product.updateOne(
+        { _id: item.product },
+        { $inc: { stock: item.quantity } },
+        session ? { session } : undefined
+      )
+    )
+  );
+};
+
+const persistOrder = async (payload, session) => {
+  const [order] = await Order.create([payload], session ? { session } : undefined);
+
+  await Customer.findByIdAndUpdate(
+    payload.customer,
+    { $addToSet: { orders: order._id } },
+    session ? { session } : undefined
+  );
+
+  await Cart.deleteOne({ customer: payload.customer }, session ? { session } : undefined);
+
+  return order;
+};
+
 exports.createOrderInDB = async ({
   razorpayOrderId,
   razorpayPaymentId,
@@ -79,7 +162,7 @@ exports.createOrderInDB = async ({
   tax,
   paymentMethod,
 }) => {
-  const order = await Order.create({
+  const payload = {
     razorpayOrderId,
     razorpayPaymentId,
     razorpaySignature,
@@ -92,19 +175,74 @@ exports.createOrderInDB = async ({
     tax,
     paymentMethod,
     status: "Paid",
+  };
+
+  const existingOrder = await findExistingOrder({
+    razorpayOrderId,
+    razorpayPaymentId,
+    customer,
   });
 
-  await Customer.findByIdAndUpdate(customer, {
-    $addToSet: { orders: order._id },
-  });
+  if (existingOrder) {
+    return existingOrder;
+  }
 
-  await Promise.all(
-    items.map(async (item) => {
-      await Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: -item.quantity },
+  const session = await mongoose.startSession();
+
+  try {
+    let committedOrder = null;
+
+    await session.withTransaction(async () => {
+      const duplicateOrder = await findExistingOrder({
+        razorpayOrderId,
+        razorpayPaymentId,
+        customer,
+        session,
       });
-    })
-  );
 
-  return order;
+      if (duplicateOrder) {
+        committedOrder = duplicateOrder;
+        return;
+      }
+
+      await reserveInventory(items, session);
+      committedOrder = await persistOrder(payload, session);
+    });
+
+    return committedOrder;
+  } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      const duplicateOrder = await findExistingOrder({
+        razorpayOrderId,
+        razorpayPaymentId,
+        customer,
+      });
+      if (duplicateOrder) return duplicateOrder;
+    }
+
+    if (!usesUnsupportedTransactions(error)) {
+      throw error;
+    }
+  } finally {
+    await session.endSession();
+  }
+
+  const reservedItems = await reserveInventory(items);
+
+  try {
+    return await persistOrder(payload);
+  } catch (error) {
+    await restoreInventory(reservedItems);
+
+    if (isDuplicateKeyError(error)) {
+      const duplicateOrder = await findExistingOrder({
+        razorpayOrderId,
+        razorpayPaymentId,
+        customer,
+      });
+      if (duplicateOrder) return duplicateOrder;
+    }
+
+    throw error;
+  }
 };
