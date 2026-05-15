@@ -62,7 +62,7 @@ exports.remove = async (req, res, next) => {
       throw { statusCode: 404, message: "Category not found" };
     }
 
-    return successResponse(res, 200, serializeCategory(category), "Category deactivated");
+    return successResponse(res, 200, serializeCategory(category), "Category deleted");
   } catch (err) {
     return next(err);
   }

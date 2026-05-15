@@ -9,6 +9,11 @@ const slugify = (value) =>
     .replace(/(^-|-$)+/g, "");
 
 exports.ensureDefaultCategories = async () => {
+  const existingCount = await Category.countDocuments();
+  if (existingCount > 0) {
+    return;
+  }
+
   const operations = DEFAULT_CATEGORIES.map((item) => ({
     updateOne: {
       filter: { slug: item.slug },
@@ -57,5 +62,5 @@ exports.updateCategory = async (id, payload) => {
 };
 
 exports.deleteCategory = async (id) => {
-  return Category.findByIdAndUpdate(id, { isActive: false }, { new: true });
+  return Category.findByIdAndDelete(id);
 };

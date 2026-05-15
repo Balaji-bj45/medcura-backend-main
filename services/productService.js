@@ -104,9 +104,5 @@ exports.updateProduct = async (id, data) => {
 };
 
 exports.deleteProduct = async (id) => {
-  return Product.findByIdAndUpdate(
-    id,
-    { isActive: false },
-    { new: true }
-  );
+  return Product.findByIdAndDelete(id);
 };
