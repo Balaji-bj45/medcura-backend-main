@@ -1,13 +1,9 @@
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const mongoose = require("mongoose");
 const helmet = require("helmet");
 const path = require("path");
 const errorHandler = require("./middleware/errorhandler");
 const { globalLimiter } = require("./middleware/rateLimiters");
-const { ensureBootstrapAdmin } = require("./services/authService");
-const { ensureDefaultCategories } = require("./services/categoryService");
 const authRoutes = require("./routes/authRoutes");
 const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
@@ -63,15 +59,6 @@ app.use("/api/cart", cartRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/customers", customerRoutes);
 app.use(errorHandler);
-
-// MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log("MongoDB Connected");
-    await ensureDefaultCategories();
-    await ensureBootstrapAdmin();
-  })
-  .catch((err) => console.log(err));
 
 app.get("/", (req, res) => {
   res.json({ success: true, message: "API Running" });

@@ -1,7 +1,10 @@
 require("dotenv").config();
-const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const {
+  connectToDatabase,
+  disconnectFromDatabase,
+} = require("../config/database");
 
 const getArgValue = (flag) => {
   const index = process.argv.indexOf(flag);
@@ -29,11 +32,7 @@ const run = async () => {
     );
   }
 
-  if (!process.env.MONGO_URI) {
-    throw new Error("MONGO_URI is required in environment");
-  }
-
-  await mongoose.connect(process.env.MONGO_URI);
+  await connectToDatabase();
 
   const hashedPassword = await bcrypt.hash(password, 12);
   const normalizedEmail = email.trim().toLowerCase();
@@ -68,5 +67,5 @@ run()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await mongoose.disconnect();
+    await disconnectFromDatabase();
   });
